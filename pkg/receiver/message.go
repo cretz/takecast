@@ -7,6 +7,16 @@ import (
 	"github.com/cretz/takecast/pkg/receiver/cast_channel"
 )
 
+const (
+	NamespaceMedia      = "urn:x-cast:com.google.cast.media"
+	NamespaceReceiver   = "urn:x-cast:com.google.cast.receiver"
+	NamespaceConnection = "urn:x-cast:com.google.cast.tp.connection"
+	NamespaceDeviceAuth = "urn:x-cast:com.google.cast.tp.deviceauth"
+	NamespaceHeartbeat  = "urn:x-cast:com.google.cast.tp.heartbeat"
+	NamespaceWebRTC     = "urn:x-cast:com.google.cast.webrtc"
+	NamespaceRemoting   = "urn:x-cast:com.google.cast.remoting"
+)
+
 type Message interface {
 	Header() *MessageHeader
 }
@@ -47,22 +57,24 @@ func UnmarshalJSONRequestMessage(r RequestMessage) (RequestMessage, error) {
 func UnmarshalRequestMessage(raw *cast_channel.CastMessage) (msg RequestMessage, err error) {
 	// Only auth doesn't have a JSON payload
 	hdr := &RequestMessageHeader{Raw: raw}
-	if hdr.Raw.GetNamespace() != "urn:x-cast:com.google.cast.tp.deviceauth" {
+	if hdr.Raw.GetNamespace() != NamespaceDeviceAuth {
 		if err = hdr.UnmarshalHeader(); err != nil {
 			return nil, err
 		}
 	}
 	switch ns := hdr.Raw.GetNamespace(); ns {
-	case "urn:x-cast:com.google.cast.media":
+	case NamespaceMedia:
 		msg, err = UnmarshalMediaRequestMessage(hdr)
-	case "urn:x-cast:com.google.cast.receiver":
+	case NamespaceReceiver:
 		msg, err = UnmarshalReceiverRequestMessage(hdr)
-	case "urn:x-cast:com.google.cast.tp.connection":
+	case NamespaceConnection:
 		msg, err = UnmarshalConnectionRequestMessage(hdr)
-	case "urn:x-cast:com.google.cast.tp.deviceauth":
+	case NamespaceDeviceAuth:
 		msg, err = UnmarshalDeviceAuthRequestMessage(hdr)
-	case "urn:x-cast:com.google.cast.tp.heartbeat":
+	case NamespaceHeartbeat:
 		msg, err = UnmarshalHeartbeatRequestMessage(hdr)
+	case NamespaceWebRTC:
+		msg, err = UnmarshalWebRTCRequestMessage(hdr)
 	}
 	if msg == nil && err == nil {
 		msg = &UnknownRequestMessage{RequestMessageHeader: hdr}

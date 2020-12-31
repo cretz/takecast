@@ -9,7 +9,6 @@ import (
 	"io"
 
 	"github.com/cretz/takecast/pkg/cert"
-	"github.com/cretz/takecast/pkg/log"
 	"github.com/cretz/takecast/pkg/receiver/cast_channel"
 	"google.golang.org/protobuf/proto"
 )
@@ -39,6 +38,7 @@ type ConnConfig struct {
 	IntermediateCACerts []*cert.KeyPair
 	PeerCert            *cert.KeyPair
 	AuthCert            *cert.KeyPair
+	Log                 Log
 }
 
 func (c *ConnConfig) Auth(d *DeviceAuthRequestMessage) (*cast_channel.AuthResponse, error) {
@@ -96,6 +96,9 @@ func NewConn(config ConnConfig) (Conn, error) {
 	if config.Socket == nil {
 		return nil, fmt.Errorf("missing socket")
 	}
+	if config.Log == nil {
+		config.Log = NopLog()
+	}
 	return &conn{ConnConfig: config}, nil
 }
 
@@ -103,19 +106,19 @@ func (c *conn) Receive() (*cast_channel.CastMessage, error) {
 	// Get msg size
 	byts := make([]byte, 4)
 	if _, err := io.ReadFull(c.Socket, byts); err != nil {
-		return nil, fmt.Errorf("failed reading size: %w", err)
+		return nil, err
 	}
 	msgSize := binary.BigEndian.Uint32(byts)
 	// Get actual message
 	byts = make([]byte, msgSize)
 	if _, err := io.ReadFull(c.Socket, byts); err != nil {
-		return nil, fmt.Errorf("failed reading message: %v", err)
+		return nil, err
 	}
 	var msg cast_channel.CastMessage
 	if err := proto.Unmarshal(byts, &msg); err != nil {
 		return nil, fmt.Errorf("failed unmarshaling msg: %v", err)
 	}
-	log.Debugf("Received message: %v", &msg)
+	c.Log.Debugf("Received message: %v", &msg)
 	return &msg, nil
 }
 
@@ -130,7 +133,7 @@ func (c *conn) Send(msg *cast_channel.CastMessage) error {
 	if msg.DestinationId == nil {
 		msg.DestinationId = &defaultDestinationID
 	}
-	log.Debugf("Sending message: %v", msg)
+	c.Log.Debugf("Sending message: %v", msg)
 	byts, err := proto.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed marshaling cast message: %w", err)
@@ -138,10 +141,10 @@ func (c *conn) Send(msg *cast_channel.CastMessage) error {
 	sizeByts := make([]byte, 4)
 	binary.BigEndian.PutUint32(sizeByts, uint32(len(byts)))
 	if _, err = c.Socket.Write(sizeByts); err != nil {
-		return fmt.Errorf("failed writing size: %w", err)
+		return err
 	}
 	if _, err = c.Socket.Write(byts); err != nil {
-		return fmt.Errorf("failed writing bytes: %w", err)
+		return err
 	}
 	return nil
 }

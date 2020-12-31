@@ -7,13 +7,13 @@ import (
 	"fmt"
 
 	"github.com/cretz/takecast/pkg/cert"
-	"github.com/cretz/takecast/pkg/log"
 )
 
 func GenerateReplacementRootCA(
 	existingDERBytesLen int,
 	template *x509.Certificate,
 	privKey *rsa.PrivateKey,
+	debugf func(string, ...interface{}),
 ) (*cert.KeyPair, error) {
 	if template == nil {
 		template = cert.NewDefaultCertificateTemplate(cert.NewDefaultCertificateSubject("Cast Root CA"))
@@ -27,7 +27,9 @@ func GenerateReplacementRootCA(
 	const maxTries = 10
 	var err error
 	for tries := 1; tries <= maxTries; tries++ {
-		log.Debugf("Attempt %v/%v to generate key of %v bytes", tries, maxTries, existingDERBytesLen)
+		if debugf != nil {
+			debugf("Attempt %v/%v to generate key of %v bytes", tries, maxTries, existingDERBytesLen)
+		}
 		// New priv key each try if not given
 		if !privGivenInParam {
 			if privKey, err = rsa.GenerateKey(rand.Reader, 2048); err != nil {
@@ -49,8 +51,10 @@ func GenerateReplacementRootCA(
 				return kp, nil
 			}
 			template.Subject.OrganizationalUnit[0] += "0"
-			log.Debugf("Key of size %v isn't %v, changed OU to %v",
-				myDERBytesLen, existingDERBytesLen, template.Subject.OrganizationalUnit[0])
+			if debugf != nil {
+				debugf("Key of size %v isn't %v, changed OU to %v",
+					myDERBytesLen, existingDERBytesLen, template.Subject.OrganizationalUnit[0])
+			}
 		}
 	}
 	return nil, fmt.Errorf("tried %v times to reach size, failed", maxTries)

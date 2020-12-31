@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/cretz/takecast/pkg/log"
 	"github.com/cretz/takecast/pkg/receiver/cast_channel"
 )
 
 type Receiver interface {
 	// Will close connection on failure, otherwise closing channel closes conn.
-	// Context is only for context, not lifetime of channel.
+	// Context is only for connect, not lifetime of channel.
 	ConnectChannel(context.Context, Conn) (Channel, error)
 	RegisterApplication(Application) error
 	// Stops the app if running
@@ -22,6 +21,7 @@ type Receiver interface {
 	// If appID is empty, just stops current one. Channel not required if appID is
 	// empty, required otherwise.
 	SwitchToApplication(ctx context.Context, ch Channel, appID string, params interface{}) error
+	CurrentApplication() Application
 	// Result should not be mutated (without being cloned first)
 	Status() *ReceiverStatus
 	// Channel should have buffer, sent to non-blocking
@@ -35,6 +35,7 @@ var ErrReceiverClosed = errors.New("receiver closed")
 
 type receiver struct {
 	config ReceiverConfig
+	log    Log
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -47,11 +48,13 @@ type receiver struct {
 type ReceiverConfig struct {
 	// Default is NewChannel
 	NewChannel func(ChannelConfig) (Channel, error)
+	Log        Log
 }
 
 func NewReceiver(config ReceiverConfig) Receiver {
 	r := &receiver{
 		config: config,
+		log:    config.Log,
 		apps:   map[string]Application{},
 		status: &ReceiverStatus{
 			IsActiveInput: true,
@@ -60,6 +63,9 @@ func NewReceiver(config ReceiverConfig) Receiver {
 			},
 		},
 		statusListeners: map[chan<- *ReceiverStatus]struct{}{},
+	}
+	if r.log == nil {
+		r.log = NopLog()
 	}
 	if r.config.NewChannel == nil {
 		r.config.NewChannel = NewChannel
@@ -100,6 +106,7 @@ func (r *receiver) ConnectChannel(ctx context.Context, conn Conn) (Channel, erro
 			Receiver:       r,
 			Conn:           conn,
 			ConnectionInfo: connInfo,
+			Log:            r.log,
 		})
 	}
 }
@@ -111,7 +118,7 @@ func (r *receiver) connect(conn Conn) (*ConnectRequestMessage, error) {
 	}
 	// If it's auth, handle that
 	if authReq, _ := msg.(*DeviceAuthRequestMessage); authReq != nil {
-		log.Debugf("Received auth request: %v", authReq)
+		r.log.Debugf("Received auth request: %v", authReq)
 		authResp, err := conn.Auth(authReq)
 		if err != nil {
 			// Send auth error (ignoring send error) and fail this
@@ -184,7 +191,9 @@ func (r *receiver) SwitchToApplication(ctx context.Context, ch Channel, appID st
 	if r.ctx.Err() != nil {
 		return ErrReceiverClosed
 	}
-	panic("TODO")
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	return r.switchToApplicationUnlocked(ctx, ch, appID, params)
 }
 
 func (r *receiver) switchToApplicationUnlocked(ctx context.Context, ch Channel, appID string, params interface{}) error {
@@ -195,12 +204,14 @@ func (r *receiver) switchToApplicationUnlocked(ctx context.Context, ch Channel, 
 	}
 	// Stop the current app if there is one not that's not the same ID
 	if len(r.status.Applications) > 0 && r.status.Applications[0].AppID != appID {
+		r.log.Debugf("Stopping application %v", r.status.Applications[0].AppID)
 		if err := r.apps[r.status.Applications[0].AppID].Stop(ctx); err != nil {
 			return fmt.Errorf("failed stopping current application: %w", err)
 		}
 	}
 	// Start the requested app if any but not already the current
 	if appID != "" && (len(r.status.Applications) == 0 || r.status.Applications[0].AppID != appID) {
+		r.log.Debugf("Starting application %v", appID)
 		if err := r.apps[appID].Start(ctx, appID, params); err != nil {
 			return fmt.Errorf("failed starting application: %w", err)
 		}
@@ -239,6 +250,15 @@ func (r *receiver) switchToApplicationUnlocked(ctx context.Context, ch Channel, 
 		}
 	}
 	return nil
+}
+
+func (r *receiver) CurrentApplication() Application {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	if len(r.status.Applications) == 0 {
+		return nil
+	}
+	return r.apps[r.status.Applications[0].AppID]
 }
 
 func (r *receiver) Status() *ReceiverStatus {

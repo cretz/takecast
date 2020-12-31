@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/cretz/takecast/pkg/log"
 	"github.com/cretz/takecast/pkg/receiver/cast_channel"
 )
 
@@ -22,12 +21,14 @@ type channel struct {
 	connectionInfo     *ConnectRequestMessage
 	connectionInfoLock sync.RWMutex
 	runCalled          bool
+	log                Log
 }
 
 type ChannelConfig struct {
 	Receiver       Receiver
 	Conn           Conn
 	ConnectionInfo *ConnectRequestMessage
+	Log            Log
 }
 
 func NewChannel(config ChannelConfig) (Channel, error) {
@@ -38,7 +39,10 @@ func NewChannel(config ChannelConfig) (Channel, error) {
 	} else if config.ConnectionInfo == nil {
 		return nil, fmt.Errorf("missing connection info")
 	}
-	c := &channel{recv: config.Receiver, conn: config.Conn, connectionInfo: config.ConnectionInfo}
+	c := &channel{recv: config.Receiver, conn: config.Conn, connectionInfo: config.ConnectionInfo, log: config.Log}
+	if c.log == nil {
+		c.log = NopLog()
+	}
 	return c, nil
 }
 
@@ -102,7 +106,7 @@ func (c *channel) Run(ctx context.Context) error {
 			c.connectionInfoLock.RLock()
 			msgBld := new(MessageBuilder).ApplyReceived(c.connectionInfo.Raw)
 			c.connectionInfoLock.RUnlock()
-			msgBld.SetNamespace("urn:x-cast:com.google.cast.receiver").MustSetJSONPayload(&ReceiverStatusResponseMessage{
+			msgBld.SetNamespace(NamespaceReceiver).MustSetJSONPayload(&ReceiverStatusResponseMessage{
 				MessageHeader: MessageHeader{Type: "RECEIVER_STATUS"},
 				Status:        status,
 			}).Send(c.conn)
@@ -140,13 +144,33 @@ func (c *channel) handleMessage(ctx context.Context, msg RequestMessage) error {
 		}
 		return new(MessageBuilder).ApplyReceived(msg.Raw).MustSetJSONPayload(resp).Send(c.conn)
 	case *LaunchRequestMessage:
-		panic("TODO")
+		return c.recv.SwitchToApplication(ctx, c, msg.AppID, msg.AppParams)
 	case *PingRequestMessage:
 		resp := &MessageHeader{Type: "PONG"}
 		return new(MessageBuilder).ApplyReceived(msg.Raw).MustSetJSONPayload(resp).Send(c.conn)
+	case *StopRequestMessage:
+		// Send back invalid request if not the right session ID
+		if s := c.recv.Status(); len(s.Applications) == 0 || s.Applications[0].SessionID != msg.SessionID {
+			resp := &InvalidRequestResponseMessage{
+				MessageHeader: MessageHeader{Type: "INVALID_REQUEST", RequestID: msg.RequestID},
+				Reason:        "INVALID_SESSION_ID",
+			}
+			return new(MessageBuilder).ApplyReceived(msg.Raw).MustSetJSONPayload(resp).Send(c.conn)
+		}
+		// Switch app to nothing
+		return c.recv.SwitchToApplication(ctx, c, "", nil)
 	default:
+		// Grab the current application and if the message is a supported namespace
+		// then let the app handle it
+		if app := c.recv.CurrentApplication(); app != nil {
+			for _, supportedNamespace := range app.Metadata().SupportedNamespaces {
+				if supportedNamespace == msg.Header().Raw.GetNamespace() {
+					return app.HandleMessage(ctx, c.conn, msg)
+				}
+			}
+		}
 		// For now, we'll just ignore unknown messages
-		log.Debugf("Ignoring unknown message: %v", msg.Header().Raw)
+		c.log.Debugf("Ignoring unknown message: %v", msg.Header().Raw)
 		return nil
 	}
 }

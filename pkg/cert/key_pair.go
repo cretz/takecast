@@ -12,8 +12,6 @@ import (
 	"io/ioutil"
 	"math/big"
 	"time"
-
-	"github.com/cretz/takecast/pkg/log"
 )
 
 type KeyPair struct {
@@ -22,7 +20,6 @@ type KeyPair struct {
 }
 
 func LoadKeyPairFromFiles(certFile string, keyFile string) (*KeyPair, error) {
-	log.Debugf("Loading cert from %v and key from %v", certFile, keyFile)
 	certBytes, err := ioutil.ReadFile(certFile)
 	if err != nil {
 		return nil, err
@@ -163,7 +160,6 @@ func (k *KeyPair) EncodeKeyPEM() []byte {
 }
 
 func (k *KeyPair) PersistToFiles(certFile string, keyFile string) error {
-	log.Debugf("Writing cert to %v and key to %v", certFile, keyFile)
 	if err := ioutil.WriteFile(certFile, k.EncodeCertPEM(), 0600); err != nil {
 		return err
 	}
